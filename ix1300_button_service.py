@@ -159,9 +159,15 @@ def make_output_pattern(output_dir: Path, prefix: str) -> str:
     return str(run_dir / "page_{page}.jpg")
 
 
+def trigger_key(trigger: proto.TriggerPacket) -> tuple[int, int, bytes]:
+    return (trigger.cmd, trigger.sequence_id, trigger.sensor)
+
+
 def run_service(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    recent_triggers: dict[tuple[int, int, bytes], float] = {}
+    consumed_scan_sequences: set[int] = set()
 
     scan_params = proto.build_default_scan_params(
         color_mode=args.color_mode,
@@ -207,6 +213,7 @@ def run_service(args: argparse.Namespace) -> int:
                     if not start_mode_reply.ok:
                         raise RuntimeError(f"set start mode failed with status {start_mode_reply.status}")
                     log(f"reserve ok; start_mode={args.start_mode}; waiting for trigger")
+                    consumed_scan_sequences.clear()
 
                     while True:
                         try:
@@ -219,7 +226,31 @@ def run_service(args: argparse.Namespace) -> int:
                             f"sequence={trigger.sequence_id} sensor={trigger.sensor.hex()}"
                         )
 
+                        now = time.monotonic()
                         if trigger.cmd == TRIGGER_COMMAND_SCAN_PAPER:
+                            if trigger.sequence_id in consumed_scan_sequences:
+                                log(
+                                    f"duplicate scan trigger ignored cmd=0x{trigger.cmd:08X} "
+                                    f"sequence={trigger.sequence_id}"
+                                )
+                                continue
+                            consumed_scan_sequences.add(trigger.sequence_id)
+
+                        trigger_id = trigger_key(trigger)
+                        last_seen = recent_triggers.get(trigger_id)
+                        if last_seen is not None and (now - last_seen) < args.trigger_dedupe_window:
+                            log(
+                                f"duplicate trigger ignored cmd=0x{trigger.cmd:08X} "
+                                f"sequence={trigger.sequence_id}"
+                            )
+                            continue
+                        recent_triggers[trigger_id] = now
+                        for key, seen_at in list(recent_triggers.items()):
+                            if (now - seen_at) >= args.trigger_dedupe_window:
+                                recent_triggers.pop(key, None)
+
+                        if trigger.cmd == TRIGGER_COMMAND_SCAN_PAPER:
+                            time.sleep(args.scan_start_delay)
                             output_pattern = make_output_pattern(output_dir, args.prefix)
                             scan_result = proto.extract_images_multi_with_reservation(
                                 reserve_reply=reserve_reply,
@@ -236,10 +267,16 @@ def run_service(args: argparse.Namespace) -> int:
                             )
                             total_pages = len(scan_result.pages)
                             total_bytes = sum(page.image_bytes for page in scan_result.pages)
-                            log(
-                                f"scan complete pages={total_pages} total_bytes={total_bytes} "
-                                f"output_dir={Path(output_pattern).parent}"
-                            )
+                            if total_pages == 0 or total_bytes == 0:
+                                log(
+                                    f"scan attempt finished with no pages; likely no paper loaded "
+                                    f"output_dir={Path(output_pattern).parent}"
+                                )
+                            else:
+                                log(
+                                    f"scan complete pages={total_pages} total_bytes={total_bytes} "
+                                    f"output_dir={Path(output_pattern).parent}"
+                                )
                             continue
 
                         if trigger.cmd in RELEASE_COMMANDS:
@@ -282,6 +319,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--read-timeout", type=float, default=8.0)
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--retry-delay", type=float, default=5.0)
+    parser.add_argument("--trigger-dedupe-window", type=float, default=2.0)
+    parser.add_argument("--scan-start-delay", type=float, default=0.2)
     return parser
 
 

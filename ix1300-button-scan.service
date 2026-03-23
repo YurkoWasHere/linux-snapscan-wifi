@@ -1,0 +1,24 @@
+[Unit]
+Description=ScanSnap iX1300 button-trigger scan service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/user/snapscan
+ExecStart=/usr/bin/python3 /home/user/snapscan/ix1300_button_service.py \
+  --local-ip 192.168.40.62 \
+  --local-mac fc:b3:aa:c7:b4:1f \
+  --if-version 0x10 \
+  --target-ip 192.168.40.63 \
+  --port1 53218 \
+  --port2 53219 \
+  --trigger-port 40000 \
+  --start-mode quick \
+  --paper-handling uturn \
+  --output-dir /home/user/snapscan/scans
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

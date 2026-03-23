@@ -496,13 +496,14 @@ def discover(
 
 def build_reserve_request(
     *,
+    local_ip: str,
     local_mac: str,
     if_version: int,
     trigger_port: int,
     password: bytes = b"",
     host_type: int = 1,
     key_code: int = DISCOVERY_KEY_IX1300,
-    unknown_1e: int = 0x1E,
+    reserve_marker: int = 0x1E,
     ix1300_mode: bool = True,
 ) -> bytes:
     """Prototype reserve request builder.
@@ -535,13 +536,28 @@ def build_reserve_request(
     struct.pack_into(">I", buf, 0x18, 0)
     struct.pack_into(">I", buf, 0x1C, 0)
     struct.pack_into(">H", buf, 0x20, if_version)
-    struct.pack_into(">B", buf, 0x22, trigger_port & 0xFF)
+    struct.pack_into(">B", buf, 0x22, reserve_marker & 0xFF)
     struct.pack_into(">B", buf, 0x23, 0)
     struct.pack_into(">I", buf, 0x24, host_type)
     struct.pack_into(">I", buf, 0x28, 1 if password else 0)
-    struct.pack_into(">I", buf, 0x2C, trigger_port)
-    struct.pack_into(">I", buf, 0x30, unknown_1e)
+    struct.pack_into(">I", buf, 0x2C, ipv4_to_int(local_ip))
+    struct.pack_into(">I", buf, 0x30, trigger_port)
     buf[0x34:0x64] = pad(password, 0x30)
+
+    now = time.localtime()
+    packed_date = ((now.tm_year & 0xFFFF) << 16) | ((now.tm_mon & 0xFF) << 8) | (now.tm_mday & 0xFF)
+    packed_time = ((now.tm_hour & 0xFF) << 24) | ((now.tm_min & 0xFF) << 16) | ((now.tm_sec & 0xFF) << 8)
+    struct.pack_into(">I", buf, 0x64, packed_date)
+    struct.pack_into(">I", buf, 0x68, packed_time)
+    struct.pack_into(">I", buf, 0x6C, 0)
+    struct.pack_into(">I", buf, 0x70, 0)
+    if if_version >= 4:
+        tz_offset = int(-time.timezone)
+        if time.daylight and now.tm_isdst > 0:
+            tz_offset = int(-time.altzone)
+        struct.pack_into(">i", buf, 0x74, tz_offset)
+    struct.pack_into(">I", buf, 0x78, 0)
+    struct.pack_into(">I", buf, 0x7C, 0)
 
     return bytes(buf)
 
@@ -1394,6 +1410,7 @@ class AppIFSession:
     ) -> ReserveReply:
         self.send(
             build_reserve_request(
+                local_ip=self.local_ip,
                 local_mac=local_mac,
                 if_version=if_version,
                 trigger_port=trigger_port,
@@ -2386,6 +2403,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     discover_parser.add_argument("--target-ip", help="use unicast discovery instead of broadcast")
 
     reserve_parser = sub.add_parser("reserve-packet", help="emit reserve request as hex")
+    reserve_parser.add_argument("--local-ip", required=True)
     reserve_parser.add_argument("--local-mac", required=True)
     reserve_parser.add_argument("--if-version", type=lambda x: int(x, 0), required=True)
     reserve_parser.add_argument("--trigger-port", type=int, required=True)
@@ -2586,6 +2604,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.cmd == "reserve-packet":
         packet = build_reserve_request(
+            local_ip=args.local_ip,
             local_mac=args.local_mac,
             if_version=args.if_version,
             trigger_port=args.trigger_port,
