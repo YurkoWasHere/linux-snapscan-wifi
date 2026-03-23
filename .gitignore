@@ -7,6 +7,7 @@ __pycache__/
 
 /tmp/
 scans/
+escl_scans/
 *.bin
 *.jpg
 *.jpeg
